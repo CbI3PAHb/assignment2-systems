@@ -57,6 +57,31 @@ Python 3.12.10 (main, Apr  9 2025, 04:03:51) [Clang 20.1.0 ] on linux
 
 `uv run` installs dependencies automatically as dictated in the `pyproject.toml` file.
 
+## Model presets
+
+Named model sizes live in [`cs336_systems/presets`](./cs336_systems/presets) as
+YAML files. The files are strictly loaded into `ModelConfig` and `ModelSize`
+dataclasses, so missing required or unknown fields fail before model construction.
+`rope_theta` is optional and defaults to `10000.0`.
+
+```python
+from cs336_systems.model_presets import ModelSmall, create_model, load_model_config
+
+config = load_model_config("small")
+model = create_model("small")
+
+# Equivalent convenience class; its numeric values still come from small.yaml.
+model = ModelSmall()
+```
+
+Use the `nano` preset for local smoke tests. The larger assignment presets can
+require substantial accelerator memory. The benchmark defaults to `nano` and
+accepts another preset with `--preset`, for example:
+
+```sh
+uv run python cs336_systems/benchmarking_script/benchmarking_script.py --preset small
+```
+
 ## Submitting
 
 To submit, run `./test_and_make_submission.sh` . This script will install your

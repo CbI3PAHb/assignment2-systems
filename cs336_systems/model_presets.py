@@ -1,207 +1,125 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
 
 import yaml
 
 from cs336_basics.model import DEFAULT_ROPE_THETA, BasicsTransformerLM
 
 
-PRESETS_DIR = Path(__file__).with_name("presets")
+_PRESETS_DIR = Path(__file__).with_name("presets")
 
 
-class PresetConfigError(ValueError):
-    """Raised when a model preset does not match the expected schema."""
+class ModelConfigError(ValueError):
+    """Raised when a model configuration is missing or invalid."""
 
 
-class ModelPreset(StrEnum):
-    NANO = "nano"
-    SMALL = "small"
-    MEDIUM = "medium"
-    LARGE = "large"
-    XL = "xl"
-    MODEL_2_7B = "2.7b"
-
-    @classmethod
-    def parse(cls, value: ModelPreset | str) -> ModelPreset:
-        if isinstance(value, cls):
-            return value
-        try:
-            return cls(value.lower())
-        except ValueError as error:
-            available = ", ".join(preset.value for preset in cls)
-            raise PresetConfigError(
-                f"Unknown model preset {value!r}. Available presets: {available}"
-            ) from error
+def _require_positive_integer(name: str, value: object) -> None:
+    if type(value) is not int or value <= 0:
+        raise ModelConfigError(
+            f"{name} must be a positive integer, got {value!r}"
+        )
 
 
-@dataclass(frozen=True, slots=True)
-class ModelSize:
+@dataclass(frozen=True, kw_only=True)
+class ModelConfig:
+    """All values needed to construct a ``BasicsTransformerLM``."""
+
+    vocab_size: int
+    context_length: int
     d_model: int
     num_layers: int
     num_heads: int
     d_ff: int
-
-    def __post_init__(self) -> None:
-        for name in ("d_model", "num_layers", "num_heads", "d_ff"):
-            value = getattr(self, name)
-            if type(value) is not int or value <= 0:
-                raise PresetConfigError(f"model_size.{name} must be a positive integer")
-        if self.d_model % self.num_heads != 0:
-            raise PresetConfigError(
-                "model_size.d_model must be divisible by model_size.num_heads"
-            )
-        if (self.d_model // self.num_heads) % 2 != 0:
-            raise PresetConfigError("model_size head dimension must be even for RoPE")
-
-
-@dataclass(frozen=True, slots=True)
-class ModelConfig:
-    vocab_size: int
-    context_length: int
-    model_size: ModelSize
     rope_theta: float = DEFAULT_ROPE_THETA
 
     def __post_init__(self) -> None:
-        if not isinstance(self.model_size, ModelSize):
-            raise PresetConfigError("model_size must be a ModelSize")
-        for name in ("vocab_size", "context_length"):
-            value = getattr(self, name)
-            if type(value) is not int or value <= 0:
-                raise PresetConfigError(f"{name} must be a positive integer")
+        _require_positive_integer("vocab_size", self.vocab_size)
+        _require_positive_integer("context_length", self.context_length)
+        _require_positive_integer("d_model", self.d_model)
+        _require_positive_integer("num_layers", self.num_layers)
+        _require_positive_integer("num_heads", self.num_heads)
+        _require_positive_integer("d_ff", self.d_ff)
+
+        if self.d_model % self.num_heads != 0:
+            raise ModelConfigError(
+                "d_model must be divisible by num_heads, "
+                f"got d_model={self.d_model} and num_heads={self.num_heads}"
+            )
+
+        head_dimension = self.d_model // self.num_heads
+        if head_dimension % 2 != 0:
+            raise ModelConfigError(
+                "attention head dimension must be even for RoPE, "
+                f"got {head_dimension}"
+            )
+
         if (
             not isinstance(self.rope_theta, (int, float))
             or isinstance(self.rope_theta, bool)
             or not math.isfinite(self.rope_theta)
             or self.rope_theta <= 0
         ):
-            raise PresetConfigError("rope_theta must be finite and positive")
-
-    def to_model_kwargs(self) -> dict[str, int | float]:
-        return {
-            "vocab_size": self.vocab_size,
-            "context_length": self.context_length,
-            "d_model": self.model_size.d_model,
-            "num_layers": self.model_size.num_layers,
-            "num_heads": self.model_size.num_heads,
-            "d_ff": self.model_size.d_ff,
-            "rope_theta": self.rope_theta,
-        }
+            raise ModelConfigError(
+                f"rope_theta must be finite and positive, got {self.rope_theta!r}"
+            )
 
 
-def _require_mapping(value: Any, location: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or not all(
-        isinstance(key, str) for key in value
-    ):
-        raise PresetConfigError(f"{location} must be a YAML mapping")
-    return value
+def list_model_presets(*, presets_dir: Path = _PRESETS_DIR) -> tuple[str, ...]:
+    """Return preset names discovered from ``*.yaml`` filenames."""
 
-
-def model_config_from_dict(raw: Mapping[str, Any]) -> ModelConfig:
-    data = _require_mapping(raw, "preset")
-    try:
-        size_data = _require_mapping(data["model_size"], "model_size")
-        model_size = ModelSize(**size_data)
-        return ModelConfig(**{**data, "model_size": model_size})
-    except KeyError as error:
-        raise PresetConfigError(f"Missing required key: {error.args[0]}") from error
-    except TypeError as error:
-        raise PresetConfigError(f"Invalid preset schema: {error}") from error
+    return tuple(path.stem for path in sorted(presets_dir.glob("*.yaml")))
 
 
 def load_model_config(
-    preset: ModelPreset | str,
+    preset_name: str,
     *,
-    presets_dir: Path = PRESETS_DIR,
+    presets_dir: Path = _PRESETS_DIR,
 ) -> ModelConfig:
-    preset = ModelPreset.parse(preset)
-    path = presets_dir / f"{preset.value}.yaml"
-    try:
-        with path.open(encoding="utf-8") as preset_file:
-            raw = yaml.safe_load(preset_file)
-    except FileNotFoundError as error:
-        raise PresetConfigError(f"Preset file does not exist: {path}") from error
-    except yaml.YAMLError as error:
-        raise PresetConfigError(f"Invalid YAML in preset {path}: {error}") from error
+    """Load and validate one named YAML preset."""
 
-    return model_config_from_dict(_require_mapping(raw, str(path)))
+    available_presets = list_model_presets(presets_dir=presets_dir)
+    if preset_name not in available_presets:
+        available = ", ".join(available_presets) or "none"
+        raise ModelConfigError(
+            f"Unknown model preset {preset_name!r}. Available presets: {available}"
+        )
+
+    preset_path = presets_dir / f"{preset_name}.yaml"
+    try:
+        with preset_path.open(encoding="utf-8") as preset_file:
+            preset_data = yaml.safe_load(preset_file)
+    except yaml.YAMLError as error:
+        raise ModelConfigError(f"Invalid YAML in {preset_path}: {error}") from error
+
+    if not isinstance(preset_data, dict):
+        raise ModelConfigError(f"{preset_path} must contain a YAML mapping")
+
+    try:
+        config = ModelConfig(**preset_data)
+    except TypeError as error:
+        raise ModelConfigError(
+            f"Invalid fields in {preset_path.name}: {error}"
+        ) from error
+    except ModelConfigError as error:
+        raise ModelConfigError(
+            f"Invalid values in {preset_path.name}: {error}"
+        ) from error
+
+    return config
 
 
 def build_model(config: ModelConfig) -> BasicsTransformerLM:
-    return BasicsTransformerLM(**config.to_model_kwargs())
+    """Construct a model from a validated configuration."""
 
-
-class PresetTransformerLM(BasicsTransformerLM):
-    preset: ClassVar[ModelPreset]
-
-    def __init__(self) -> None:
-        config = load_model_config(self.preset)
-        super().__init__(**config.to_model_kwargs())
-        self.preset_config = config
-
-
-class ModelNano(PresetTransformerLM):
-    preset = ModelPreset.NANO
-
-
-class ModelSmall(PresetTransformerLM):
-    preset = ModelPreset.SMALL
-
-
-class ModelMedium(PresetTransformerLM):
-    preset = ModelPreset.MEDIUM
-
-
-class ModelLarge(PresetTransformerLM):
-    preset = ModelPreset.LARGE
-
-
-class ModelXL(PresetTransformerLM):
-    preset = ModelPreset.XL
-
-
-class Model2_7B(PresetTransformerLM):
-    preset = ModelPreset.MODEL_2_7B
-
-
-MODEL_CLASSES: dict[ModelPreset, type[PresetTransformerLM]] = {
-    model_class.preset: model_class
-    for model_class in (
-        ModelNano,
-        ModelSmall,
-        ModelMedium,
-        ModelLarge,
-        ModelXL,
-        Model2_7B,
+    return BasicsTransformerLM(
+        vocab_size=config.vocab_size,
+        context_length=config.context_length,
+        d_model=config.d_model,
+        num_layers=config.num_layers,
+        num_heads=config.num_heads,
+        d_ff=config.d_ff,
+        rope_theta=config.rope_theta,
     )
-}
-
-
-def create_model(preset: ModelPreset | str) -> PresetTransformerLM:
-    return MODEL_CLASSES[ModelPreset.parse(preset)]()
-
-
-__all__ = [
-    "MODEL_CLASSES",
-    "DEFAULT_ROPE_THETA",
-    "Model2_7B",
-    "ModelConfig",
-    "ModelLarge",
-    "ModelMedium",
-    "ModelNano",
-    "ModelPreset",
-    "ModelSize",
-    "ModelSmall",
-    "ModelXL",
-    "PresetConfigError",
-    "PresetTransformerLM",
-    "build_model",
-    "create_model",
-    "load_model_config",
-    "model_config_from_dict",
-]

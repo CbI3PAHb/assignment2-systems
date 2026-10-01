@@ -1,148 +1,196 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
+from cs336_basics.model import DEFAULT_ROPE_THETA, BasicsTransformerLM
 from cs336_systems.model_presets import (
     ModelConfig,
-    ModelNano,
-    ModelPreset,
-    PresetConfigError,
-    create_model,
+    ModelConfigError,
+    build_model,
+    list_model_presets,
     load_model_config,
 )
 
 
+def _valid_preset_data() -> dict[str, object]:
+    return {
+        "vocab_size": 1024,
+        "context_length": 128,
+        "d_model": 128,
+        "num_layers": 4,
+        "num_heads": 4,
+        "d_ff": 256,
+        "rope_theta": 10_000.0,
+    }
+
+
+def _write_preset(
+    presets_dir: Path,
+    preset_data: dict[str, object],
+    *,
+    name: str = "test",
+) -> None:
+    (presets_dir / f"{name}.yaml").write_text(
+        yaml.safe_dump(preset_data),
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.parametrize(
-    ("preset", "expected"),
+    ("preset_name", "expected"),
     [
-        (ModelPreset.NANO, (128, 4, 4, 256)),
-        (ModelPreset.SMALL, (768, 12, 12, 3072)),
-        (ModelPreset.MEDIUM, (1024, 24, 16, 4096)),
-        (ModelPreset.LARGE, (1280, 36, 20, 5120)),
-        (ModelPreset.XL, (1600, 48, 25, 6400)),
-        (ModelPreset.MODEL_2_7B, (2560, 32, 32, 10240)),
+        ("nano", (128, 4, 4, 256)),
+        ("small", (768, 12, 12, 3072)),
+        ("medium", (1024, 24, 16, 4096)),
+        ("large", (1280, 36, 20, 5120)),
+        ("xl", (1600, 48, 25, 6400)),
+        ("2.7b", (2560, 32, 32, 10240)),
     ],
 )
 def test_load_model_config(
-    preset: ModelPreset,
+    preset_name: str,
     expected: tuple[int, int, int, int],
 ) -> None:
-    config = load_model_config(preset)
+    config = load_model_config(preset_name)
 
     assert (
-        config.model_size.d_model,
-        config.model_size.num_layers,
-        config.model_size.num_heads,
-        config.model_size.d_ff,
+        config.d_model,
+        config.num_layers,
+        config.num_heads,
+        config.d_ff,
     ) == expected
 
 
-def test_create_model_uses_named_preset_class() -> None:
-    model = create_model("nano")
+def test_preset_names_are_discovered_from_yaml_files(tmp_path: Path) -> None:
+    _write_preset(tmp_path, _valid_preset_data(), name="toy")
 
-    assert isinstance(model, ModelNano)
-    assert model.d_model == 128
-    assert model.preset_config == load_model_config(ModelPreset.NANO)
-
-
-def test_unknown_yaml_key_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "nano.yaml").write_text(
-        """
-vocab_size: 1024
-context_length: 128
-unknown: true
-model_size:
-  d_model: 128
-  num_layers: 4
-  num_heads: 4
-  d_ff: 256
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(PresetConfigError, match="unexpected keyword argument 'unknown'"):
-        load_model_config(ModelPreset.NANO, presets_dir=tmp_path)
+    assert list_model_presets(presets_dir=tmp_path) == ("toy",)
+    assert load_model_config("toy", presets_dir=tmp_path).d_model == 128
 
 
-def test_missing_required_yaml_key_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "nano.yaml").write_text(
-        """
-vocab_size: 1024
-model_size:
-  d_model: 128
-  num_layers: 4
-  num_heads: 4
-  d_ff: 256
-""".lstrip(),
-        encoding="utf-8",
-    )
+def test_build_model_uses_every_config_value() -> None:
+    config = load_model_config("nano")
 
-    with pytest.raises(PresetConfigError, match="missing.*context_length"):
-        load_model_config(ModelPreset.NANO, presets_dir=tmp_path)
+    model = build_model(config)
 
-
-def test_incompatible_head_count_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "nano.yaml").write_text(
-        """
-vocab_size: 1024
-context_length: 128
-model_size:
-  d_model: 127
-  num_layers: 4
-  num_heads: 4
-  d_ff: 256
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(PresetConfigError, match="d_model must be divisible"):
-        load_model_config(ModelPreset.NANO, presets_dir=tmp_path)
+    assert isinstance(model, BasicsTransformerLM)
+    assert model.config == {
+        "vocab_size": config.vocab_size,
+        "context_length": config.context_length,
+        "d_model": config.d_model,
+        "num_layers": config.num_layers,
+        "num_heads": config.num_heads,
+        "d_ff": config.d_ff,
+        "rope_theta": config.rope_theta,
+    }
 
 
-def test_odd_head_dimension_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "nano.yaml").write_text(
-        """
-vocab_size: 1024
-context_length: 128
-model_size:
-  d_model: 6
-  num_layers: 4
-  num_heads: 2
-  d_ff: 24
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(PresetConfigError, match="head dimension must be even"):
-        load_model_config(ModelPreset.NANO, presets_dir=tmp_path)
+def test_unknown_preset_lists_available_names() -> None:
+    with pytest.raises(ModelConfigError, match="Available presets:.*nano"):
+        load_model_config("does-not-exist")
 
 
-def test_missing_rope_theta_uses_default(tmp_path: Path) -> None:
-    (tmp_path / "nano.yaml").write_text(
-        """
-vocab_size: 1024
-context_length: 128
-model_size:
-  d_model: 128
-  num_layers: 4
-  num_heads: 4
-  d_ff: 256
-""".lstrip(),
-        encoding="utf-8",
-    )
+def test_malformed_yaml_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "broken.yaml").write_text("d_model: [", encoding="utf-8")
 
-    assert load_model_config(ModelPreset.NANO, presets_dir=tmp_path).rope_theta == 10_000.0
+    with pytest.raises(ModelConfigError, match="Invalid YAML.*broken.yaml"):
+        load_model_config("broken", presets_dir=tmp_path)
 
 
-def test_model_config_rejects_unstructured_model_size() -> None:
-    with pytest.raises(PresetConfigError, match="model_size must be a ModelSize"):
+def test_yaml_root_must_be_a_mapping(tmp_path: Path) -> None:
+    (tmp_path / "list.yaml").write_text("- 128\n- 256\n", encoding="utf-8")
+
+    with pytest.raises(ModelConfigError, match="must contain a YAML mapping"):
+        load_model_config("list", presets_dir=tmp_path)
+
+
+def test_unknown_yaml_field_is_rejected(tmp_path: Path) -> None:
+    preset_data = _valid_preset_data()
+    preset_data["unknown"] = True
+    _write_preset(tmp_path, preset_data)
+
+    with pytest.raises(ModelConfigError, match="unexpected keyword argument 'unknown'"):
+        load_model_config("test", presets_dir=tmp_path)
+
+
+def test_missing_required_yaml_field_is_rejected(tmp_path: Path) -> None:
+    preset_data = _valid_preset_data()
+    del preset_data["context_length"]
+    _write_preset(tmp_path, preset_data)
+
+    with pytest.raises(ModelConfigError, match="missing.*context_length"):
+        load_model_config("test", presets_dir=tmp_path)
+
+
+def test_d_model_must_be_divisible_by_num_heads() -> None:
+    with pytest.raises(ModelConfigError, match="d_model must be divisible"):
         ModelConfig(
             vocab_size=1024,
             context_length=128,
-            model_size={
-                "d_model": 128,
-                "num_layers": 4,
-                "num_heads": 4,
-                "d_ff": 256,
-            },  # type: ignore[arg-type]
+            d_model=127,
+            num_layers=4,
+            num_heads=4,
+            d_ff=256,
         )
+
+
+def test_yaml_value_error_names_the_preset_file(tmp_path: Path) -> None:
+    preset_data = _valid_preset_data()
+    preset_data["d_model"] = 127
+    _write_preset(tmp_path, preset_data)
+
+    with pytest.raises(ModelConfigError, match="test.yaml.*d_model=127"):
+        load_model_config("test", presets_dir=tmp_path)
+
+
+def test_attention_head_dimension_must_be_even() -> None:
+    with pytest.raises(ModelConfigError, match="head dimension must be even"):
+        ModelConfig(
+            vocab_size=1024,
+            context_length=128,
+            d_model=6,
+            num_layers=4,
+            num_heads=2,
+            d_ff=24,
+        )
+
+
+def test_missing_rope_theta_uses_default(tmp_path: Path) -> None:
+    preset_data = _valid_preset_data()
+    del preset_data["rope_theta"]
+    _write_preset(tmp_path, preset_data)
+
+    config = load_model_config("test", presets_dir=tmp_path)
+
+    assert config.rope_theta == DEFAULT_ROPE_THETA
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("vocab_size", 0),
+        ("context_length", -1),
+        ("d_model", True),
+        ("num_layers", 1.5),
+        ("num_heads", "4"),
+    ],
+)
+def test_integer_fields_must_be_positive_integers(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    config_data = _valid_preset_data()
+    config_data[field_name] = invalid_value
+
+    with pytest.raises(ModelConfigError, match=field_name):
+        ModelConfig(**config_data)
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1, float("inf"), float("nan"), True])
+def test_rope_theta_must_be_finite_and_positive(invalid_value: object) -> None:
+    config_data = _valid_preset_data()
+    config_data["rope_theta"] = invalid_value
+
+    with pytest.raises(ModelConfigError, match="rope_theta"):
+        ModelConfig(**config_data)

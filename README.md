@@ -60,23 +60,55 @@ Python 3.12.10 (main, Apr  9 2025, 04:03:51) [Clang 20.1.0 ] on linux
 ## Model presets
 
 Named model sizes live in [`cs336_systems/presets`](./cs336_systems/presets) as
-YAML files. The files are strictly loaded into `ModelConfig` and `ModelSize`
-dataclasses, so missing required or unknown fields fail before model construction.
-`rope_theta` is optional and defaults to `10000.0`.
+YAML files. A preset is data, not a separate Python model class. Each file is
+loaded into one flat `ModelConfig`, whose fields match the constructor of
+`BasicsTransformerLM`. Missing required fields, unknown fields, and invalid
+dimension combinations fail before model construction.
 
 ```python
-from cs336_systems.model_presets import ModelSmall, create_model, load_model_config
+from cs336_systems.model_presets import (
+    build_model,
+    list_model_presets,
+    load_model_config,
+)
+
+print(list_model_presets())
+# ('2.7b', 'large', 'medium', 'nano', 'small', 'xl')
 
 config = load_model_config("small")
-model = create_model("small")
+print(config.d_model)  # 768
 
-# Equivalent convenience class; its numeric values still come from small.yaml.
-model = ModelSmall()
+model = build_model(config)
 ```
 
-Use the `nano` preset for local smoke tests. The larger assignment presets can
-require substantial accelerator memory. The benchmark defaults to `nano` and
-accepts another preset with `--preset`, for example:
+To change a value without mutating the loaded config, use `dataclasses.replace`:
+
+```python
+from dataclasses import replace
+
+short_context_config = replace(config, context_length=64)
+short_context_model = build_model(short_context_config)
+```
+
+To add a preset, add one YAML file such as
+`cs336_systems/presets/toy.yaml`:
+
+```yaml
+vocab_size: 1024
+context_length: 128
+d_model: 128
+num_layers: 4
+num_heads: 4
+d_ff: 256
+rope_theta: 10000.0
+```
+
+No enum, model subclass, or registry update is needed. `list_model_presets()`
+and the benchmark CLI discover YAML filenames automatically. `rope_theta` is
+optional and defaults to `10000.0`.
+
+Use the `nano` preset for local smoke tests. Larger presets can require
+substantial accelerator memory. The benchmark defaults to `nano`:
 
 ```sh
 uv run python cs336_systems/benchmarking_script/benchmarking_script.py --preset small

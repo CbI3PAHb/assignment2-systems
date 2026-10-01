@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Set
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -9,11 +9,10 @@ from typing import Any, ClassVar
 
 import yaml
 
-from cs336_basics.model import BasicsTransformerLM
+from cs336_basics.model import DEFAULT_ROPE_THETA, BasicsTransformerLM
 
 
 PRESETS_DIR = Path(__file__).with_name("presets")
-DEFAULT_ROPE_THETA = 10_000.0
 
 
 class PresetConfigError(ValueError):
@@ -103,45 +102,16 @@ def _require_mapping(value: Any, location: str) -> Mapping[str, Any]:
     return value
 
 
-def _check_keys(
-    value: Mapping[str, Any],
-    *,
-    required: set[str],
-    optional: Set[str] = frozenset(),
-    location: str,
-) -> None:
-    missing = required - value.keys()
-    extra = value.keys() - required - optional
-    if missing:
-        raise PresetConfigError(
-            f"Missing keys in {location}: {', '.join(sorted(missing))}"
-        )
-    if extra:
-        raise PresetConfigError(
-            f"Unknown keys in {location}: {', '.join(sorted(extra))}"
-        )
-
-
 def model_config_from_dict(raw: Mapping[str, Any]) -> ModelConfig:
     data = _require_mapping(raw, "preset")
-    _check_keys(
-        data,
-        required={"vocab_size", "context_length", "model_size"},
-        optional={"rope_theta"},
-        location="preset",
-    )
-
-    size_data = _require_mapping(data["model_size"], "model_size")
-    size_fields = {"d_model", "num_layers", "num_heads", "d_ff"}
-    _check_keys(size_data, required=size_fields, location="model_size")
-
-    model_size = ModelSize(**{name: size_data[name] for name in size_fields})
-    return ModelConfig(
-        vocab_size=data["vocab_size"],
-        context_length=data["context_length"],
-        model_size=model_size,
-        rope_theta=data.get("rope_theta", DEFAULT_ROPE_THETA),
-    )
+    try:
+        size_data = _require_mapping(data["model_size"], "model_size")
+        model_size = ModelSize(**size_data)
+        return ModelConfig(**{**data, "model_size": model_size})
+    except KeyError as error:
+        raise PresetConfigError(f"Missing required key: {error.args[0]}") from error
+    except TypeError as error:
+        raise PresetConfigError(f"Invalid preset schema: {error}") from error
 
 
 def load_model_config(

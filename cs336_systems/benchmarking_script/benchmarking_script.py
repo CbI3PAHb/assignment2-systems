@@ -1,22 +1,19 @@
 import argparse
 
+import torch
 import numpy as np
 
 from cs336_basics.data import get_batch
 from cs336_basics.nn_utils import cross_entropy
 from cs336_basics.optimizer import AdamW
 from cs336_systems.model_presets import (
-    ModelPreset, create_model, load_model_config
-)
-
-from cs336_systems.model_presets import (
     ModelPreset,
     create_model,
     load_model_config,
 )
+
 N_WARM_UP_STEPS = 4
 N_BENCHMARK_S = 4
-
 
 def main(preset: ModelPreset) -> None:
     config = load_model_config(preset)
@@ -54,6 +51,7 @@ def main(preset: ModelPreset) -> None:
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
+        torch.cuda.synchronize()
 
 
 if __name__ == "__main__":

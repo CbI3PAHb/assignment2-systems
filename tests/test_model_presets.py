@@ -60,7 +60,24 @@ model_size:
         encoding="utf-8",
     )
 
-    with pytest.raises(PresetConfigError, match="Unknown keys in preset: unknown"):
+    with pytest.raises(PresetConfigError, match="unexpected keyword argument 'unknown'"):
+        load_model_config(ModelPreset.NANO, presets_dir=tmp_path)
+
+
+def test_missing_required_yaml_key_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "nano.yaml").write_text(
+        """
+vocab_size: 1024
+model_size:
+  d_model: 128
+  num_layers: 4
+  num_heads: 4
+  d_ff: 256
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PresetConfigError, match="missing.*context_length"):
         load_model_config(ModelPreset.NANO, presets_dir=tmp_path)
 
 

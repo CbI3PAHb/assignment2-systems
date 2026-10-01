@@ -5,18 +5,19 @@ import json
 import logging
 import math
 import os
-from einops import rearrange, einsum
-import einx
 
+import einx
 import torch
 import torch.nn as nn
+from einops import einsum, rearrange
+from jaxtyping import Bool, Float, Int
 from torch import Tensor
-from jaxtyping import Float, Bool, Int
-
 
 from .nn_utils import softmax
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_ROPE_THETA = 10_000.0
 
 
 class Linear(nn.Module):
@@ -111,7 +112,12 @@ class RMSNorm(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, context_length: int, dim: int, theta: float = 10000.0):
+    def __init__(
+        self,
+        context_length: int,
+        dim: int,
+        theta: float = DEFAULT_ROPE_THETA,
+    ):
         super().__init__()
         self.register_buffer(
             "_freq_cis_cache",
@@ -167,8 +173,9 @@ class BasicsTransformerLM(nn.Module):
             evenly divisible by `num_heads`.
         d_ff: int
             Dimensionality of the feed-forward inner layer (section 3.3).
-        rope_theta: float
-            The theta value for the RoPE positional encoding.
+        rope_theta: float, default is 10000.0
+            The theta value for the RoPE positional encoding. It must be finite
+            and positive.
 
     Returns:
         FloatTensor of shape (batch size, sequence_length, vocab_size) with the
@@ -183,13 +190,30 @@ class BasicsTransformerLM(nn.Module):
         num_layers: int,
         num_heads: int,
         d_ff: int,
-        rope_theta: float,
+        rope_theta: float = DEFAULT_ROPE_THETA,
     ):
-        # Store the model configuration for serialization / deserialization
-        self.config = {
-            k: v for k, v in locals().items() if k != "self" and not (k.startswith("__") and k.endswith("__"))
-        }
         super().__init__()
+
+        if (
+            not isinstance(rope_theta, (int, float))
+            or isinstance(rope_theta, bool)
+            or not math.isfinite(rope_theta)
+            or rope_theta <= 0
+        ):
+            raise ValueError(
+                f"rope_theta must be finite and positive, got {rope_theta!r}"
+            )
+        rope_theta = float(rope_theta)
+
+        self.config = {
+            "vocab_size": vocab_size,
+            "context_length": context_length,
+            "d_model": d_model,
+            "num_layers": num_layers,
+            "num_heads": num_heads,
+            "d_ff": d_ff,
+            "rope_theta": rope_theta,
+        }
         self.vocab_size = vocab_size
         self.context_length = context_length
         self.d_model = d_model
@@ -198,7 +222,7 @@ class BasicsTransformerLM(nn.Module):
         self.positional_encoder = RotaryEmbedding(
             context_length=context_length,
             dim=d_head,
-            theta=rope_theta
+            theta=rope_theta,
         )
         self.layers = nn.ModuleList(
             [

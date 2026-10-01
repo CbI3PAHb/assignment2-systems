@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug benchmarking_script.py",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/cs336_systems/benchmarking_script/benchmarking_script.py",
+            "cwd": "${workspaceFolder}/cs336_systems/benchmarking_script",
+            "console": "integratedTerminal",
+            // "stopOnEntry": true,
+            "justMyCode": false
+        }
+    ]
+}
